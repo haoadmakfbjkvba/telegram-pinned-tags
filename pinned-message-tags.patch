@@ -1,0 +1,1355 @@
+diff --git a/Telegram/Telegram-iOS/en.lproj/Localizable.strings b/Telegram/Telegram-iOS/en.lproj/Localizable.strings
+index 242e45b324..c62616811a 100644
+--- a/Telegram/Telegram-iOS/en.lproj/Localizable.strings
++++ b/Telegram/Telegram-iOS/en.lproj/Localizable.strings
+@@ -17243,3 +17243,12 @@ Error: %8$@";
+ "Gift.Delete.Title" = "Delete Gift";
+ "Gift.Delete.Text" = "Do you want to delete this gift?\n\nIt will disappear from your profile and can't be restored.";
+ "Gift.Delete.Success" = "Gift Deleted";
++
++"PinnedTags.AddTag" = "Add Tag";
++"PinnedTags.ChangeTag" = "Change Tag";
++"PinnedTags.RemoveTag" = "Remove Tag";
++"PinnedTags.NewTag" = "New Tag";
++"PinnedTags.EditTag" = "Edit Tag";
++"PinnedTags.EditorText" = "Tap the icon to choose an emoji and enter a name for the tag.";
++"PinnedTags.ChangeEmoji" = "Change Emoji";
++"PinnedTags.DeleteTag" = "Delete Tag";
+diff --git a/submodules/TelegramUI/BUILD b/submodules/TelegramUI/BUILD
+index 75245702cc..a7755141cf 100644
+--- a/submodules/TelegramUI/BUILD
++++ b/submodules/TelegramUI/BUILD
+@@ -559,6 +559,7 @@ swift_library(
+         "//submodules/TelegramUI/Components/AdPanelHeaderPanelComponent",
+         "//submodules/TelegramUI/Components/MessageFeeHeaderPanelComponent",
+         "//submodules/TelegramUI/Components/LegacyChatHeaderPanelComponent",
++        "//submodules/TelegramUI/Components/PinnedMessageTags",
+         "//submodules/TelegramUI/Components/GroupCallHeaderPanelComponent",
+         "//submodules/TelegramUI/Components/Chat/ChatSearchNavigationContentNode",
+         "//submodules/TelegramUI/Components/Settings/PasskeysScreen",
+diff --git a/submodules/TelegramUI/Components/Chat/SavedTagNameAlertController/Sources/SavedTagNameAlertController.swift b/submodules/TelegramUI/Components/Chat/SavedTagNameAlertController/Sources/SavedTagNameAlertController.swift
+index 23a4c4e5bc..6a08cd921c 100644
+--- a/submodules/TelegramUI/Components/Chat/SavedTagNameAlertController/Sources/SavedTagNameAlertController.swift
++++ b/submodules/TelegramUI/Components/Chat/SavedTagNameAlertController/Sources/SavedTagNameAlertController.swift
+@@ -142,6 +142,10 @@ private final class PromptInputFieldNode: ASDisplayNode, ASEditableTextNodeDeleg
+         self.textInputNode.becomeFirstResponder()
+     }
+     
++    var isInputActive: Bool {
++        return self.textInputNode.isFirstResponder()
++    }
++    
+     func deactivateInput() {
+         self.textInputNode.resignFirstResponder()
+     }
+@@ -203,7 +207,16 @@ private final class SavedTagNameAlertContentNode: AlertContentNode {
+     private let subtext: String
+     private let titleFont: PromptControllerTitleFont
+     private let reaction: MessageReaction.Reaction
+-    private let file: TelegramMediaFile
++    private var file: TelegramMediaFile?
++    // With `emojiAction`, the emoji in the field is a button that opens an emoji picker; until an emoji is
++    // picked, the field shows `emojiPlaceholder`, and Done is disabled while `emojiRequired`. The action gets the
++    // emoji view and a getter for the current one, where the picked emoji flies to.
++    private let emojiPlaceholder: UIImage?
++    private let emojiAction: ((UIView, @escaping () -> UIView?) -> Void)?
++    private let emojiRequired: Bool
++    private let characterLimit: Int
++    private var emojiButton: UIButton?
++    private var emojiPlaceholderView: UIImageView?
+ 
+     private let textView = ComponentView<Empty>()
+     private let subtextView = ComponentView<Empty>()
+@@ -231,7 +244,7 @@ private final class SavedTagNameAlertContentNode: AlertContentNode {
+         return self.isUserInteractionEnabled
+     }
+     
+-    init(context: AccountContext, theme: AlertControllerTheme, ptheme: PresentationTheme, strings: PresentationStrings, actions: [TextAlertAction], text: String, subtext: String, reaction: MessageReaction.Reaction, file: TelegramMediaFile, titleFont: PromptControllerTitleFont, value: String?, characterLimit: Int) {
++    init(context: AccountContext, theme: AlertControllerTheme, ptheme: PresentationTheme, strings: PresentationStrings, actions: [TextAlertAction], text: String, subtext: String, reaction: MessageReaction.Reaction, file: TelegramMediaFile?, emojiPlaceholder: UIImage? = nil, emojiAction: ((UIView, @escaping () -> UIView?) -> Void)? = nil, emojiRequired: Bool = true, titleFont: PromptControllerTitleFont, value: String?, characterLimit: Int) {
+         self.context = context
+         self.theme = theme
+         self.strings = strings
+@@ -239,6 +252,10 @@ private final class SavedTagNameAlertContentNode: AlertContentNode {
+         self.subtext = subtext
+         self.reaction = reaction
+         self.file = file
++        self.emojiPlaceholder = emojiPlaceholder
++        self.emojiAction = emojiAction
++        self.emojiRequired = emojiRequired
++        self.characterLimit = characterLimit
+         self.titleFont = titleFont
+         
+         self.inputFieldNode = PromptInputFieldNode(theme: ptheme, placeholder: strings.Chat_EditTagTitle_Placeholder, characterLimit: characterLimit)
+@@ -270,7 +287,13 @@ private final class SavedTagNameAlertContentNode: AlertContentNode {
+         for actionNode in self.actionNodes {
+             self.addSubnode(actionNode)
+         }
+-        self.actionNodes.last?.actionEnabled = true
++        self.actionNodes.last?.actionEnabled = file != nil || !emojiRequired
++        
++        if emojiAction != nil {
++            let emojiButton = UIButton(type: .custom)
++            emojiButton.addTarget(self, action: #selector(self.emojiPressed), for: .touchUpInside)
++            self.emojiButton = emojiButton
++        }
+         
+         for separatorNode in self.actionVerticalSeparators {
+             self.addSubnode(separatorNode)
+@@ -286,7 +309,7 @@ private final class SavedTagNameAlertContentNode: AlertContentNode {
+         
+         self.inputFieldNode.textChanged = { [weak self] text in
+             if let strongSelf = self, let lastNode = strongSelf.actionNodes.last {
+-                lastNode.actionEnabled = text.count <= characterLimit
++                lastNode.actionEnabled = text.count <= characterLimit && (strongSelf.file != nil || !strongSelf.emojiRequired)
+                 strongSelf.requestLayout?(.immediate)
+             }
+         }
+@@ -298,6 +321,42 @@ private final class SavedTagNameAlertContentNode: AlertContentNode {
+         self.disposable.dispose()
+     }
+     
++    @objc private func emojiPressed() {
++        guard let emojiAction = self.emojiAction else {
++            return
++        }
++        let sourceView: UIView = self.currentEmojiView ?? self.view
++        let destinationView: () -> UIView? = { [weak self] in
++            return self?.currentEmojiView
++        }
++        if self.inputFieldNode.isInputActive {
++            // Without the keyboard the alert moves down to the center: the picker opens once it is there.
++            self.inputFieldNode.deactivateInput()
++            Queue.mainQueue().after(0.35) {
++                emojiAction(sourceView, destinationView)
++            }
++        } else {
++            emojiAction(sourceView, destinationView)
++        }
++    }
++    
++    // The emoji in the field, or its placeholder.
++    private var currentEmojiView: UIView? {
++        return self.file != nil ? self.iconView.view : self.emojiPlaceholderView
++    }
++    
++    var currentFile: TelegramMediaFile? {
++        return self.file
++    }
++    
++    func updateFile(_ file: TelegramMediaFile) {
++        self.file = file
++        self.actionNodes.last?.actionEnabled = self.inputFieldNode.text.count <= self.characterLimit
++        if let size = self.validLayout {
++            _ = self.updateLayout(size: size, transition: .immediate)
++        }
++    }
++    
+     var value: String {
+         return self.inputFieldNode.text
+     }
+@@ -416,33 +475,57 @@ private final class SavedTagNameAlertContentNode: AlertContentNode {
+         if case .builtin = self.reaction {
+             visibleEmojiSize = CGSize(width: visibleEmojiSize.width * 2.0, height: visibleEmojiSize.height * 2.0)
+         }
+-        let _ = self.iconView.update(
+-            transition: .immediate,
+-            component: AnyComponent(EmojiStatusComponent(
+-                context: self.context,
+-                animationCache: self.context.animationCache,
+-                animationRenderer: self.context.animationRenderer,
+-                content: .animation(
+-                    content: .file(file: self.file),
+-                    size: visibleEmojiSize,
+-                    placeholderColor: self.theme.primaryColor.withMultipliedAlpha(0.2),
+-                    themeColor: self.theme.primaryColor,
+-                    loopMode: .forever
+-                ),
+-                isVisibleForAnimations: false,
+-                useSharedAnimation: true,
+-                action: nil,
+-                emojiFileUpdated: nil
+-            )),
+-            environment: {},
+-            containerSize: visibleEmojiSize
+-        )
+-        if let iconComponentView = self.iconView.view {
+-            if iconComponentView.superview == nil {
+-                self.view.addSubview(iconComponentView)
++        let emojiFrame = CGRect(origin: CGPoint(x: inputFieldFrame.minX + 26.0, y: inputFieldFrame.minY + 14.0), size: emojiSize)
++        if let file = self.file {
++            let _ = self.iconView.update(
++                transition: .immediate,
++                component: AnyComponent(EmojiStatusComponent(
++                    context: self.context,
++                    animationCache: self.context.animationCache,
++                    animationRenderer: self.context.animationRenderer,
++                    content: .animation(
++                        content: .file(file: file),
++                        size: visibleEmojiSize,
++                        placeholderColor: self.theme.primaryColor.withMultipliedAlpha(0.2),
++                        themeColor: self.theme.primaryColor,
++                        loopMode: .forever
++                    ),
++                    isVisibleForAnimations: false,
++                    useSharedAnimation: true,
++                    action: nil,
++                    emojiFileUpdated: nil
++                )),
++                environment: {},
++                containerSize: visibleEmojiSize
++            )
++            if let iconComponentView = self.iconView.view {
++                if iconComponentView.superview == nil {
++                    self.view.addSubview(iconComponentView)
++                }
++                iconComponentView.frame = visibleEmojiSize.centered(around: emojiFrame.center)
++            }
++        }
++        if self.file == nil, let emojiPlaceholder = self.emojiPlaceholder {
++            let placeholderView: UIImageView
++            if let current = self.emojiPlaceholderView {
++                placeholderView = current
++            } else {
++                placeholderView = UIImageView()
++                self.emojiPlaceholderView = placeholderView
++                self.view.addSubview(placeholderView)
+             }
+-            let emojiFrame = CGRect(origin: CGPoint(x: inputFieldFrame.minX + 26.0, y: inputFieldFrame.minY + 14.0), size: emojiSize)
+-            iconComponentView.frame = visibleEmojiSize.centered(around: emojiFrame.center)
++            placeholderView.image = emojiPlaceholder
++            placeholderView.frame = emojiPlaceholder.size.centered(around: emojiFrame.center)
++        } else if let placeholderView = self.emojiPlaceholderView {
++            self.emojiPlaceholderView = nil
++            placeholderView.removeFromSuperview()
++        }
++        if let emojiButton = self.emojiButton {
++            if emojiButton.superview == nil {
++                self.view.addSubview(emojiButton)
++            }
++            self.view.bringSubviewToFront(emojiButton)
++            emojiButton.frame = emojiFrame.insetBy(dx: -12.0, dy: -12.0)
+         }
+         
+         let resultSize = CGSize(width: resultWidth, height: textSize.height + subtextSpacing + subtextSize.height + spacing + inputHeight + actionsHeight + insets.top + insets.bottom)
+@@ -553,3 +636,57 @@ public func savedTagNameAlertController(context: AccountContext, updatedPresenta
+     }
+     return controller
+ }
++
++// The same alert with a tappable emoji in the field. A tap calls `emojiAction` with the emoji view and a getter for
++// the current one (the picked emoji flies there); the picked file comes back through the returned `updateFile`.
++// While `emojiRequired`, Done is enabled once an emoji is set; otherwise `apply` may get no file (the emoji stays).
++public func savedTagEditorAlertController(context: AccountContext, text: String, subtext: String, value: String?, file: TelegramMediaFile?, emojiPlaceholder: UIImage?, emojiRequired: Bool, characterLimit: Int, emojiAction: @escaping (UIView, @escaping () -> UIView?) -> Void, apply: @escaping (String, TelegramMediaFile?) -> Void) -> (controller: AlertController, updateFile: (TelegramMediaFile) -> Void) {
++    let presentationData = context.sharedContext.currentPresentationData.with { $0 }
++    
++    var dismissImpl: ((Bool) -> Void)?
++    var applyImpl: (() -> Void)?
++    
++    let actions: [TextAlertAction] = [TextAlertAction(type: .genericAction, title: presentationData.strings.Common_Cancel, action: {
++        dismissImpl?(true)
++    }), TextAlertAction(type: .defaultAction, title: presentationData.strings.Common_Done, action: {
++        applyImpl?()
++    })]
++    
++    let contentNode = SavedTagNameAlertContentNode(context: context, theme: AlertControllerTheme(presentationData: presentationData), ptheme: presentationData.theme, strings: presentationData.strings, actions: actions, text: text, subtext: subtext, reaction: .custom(file?.fileId.id ?? 0), file: file, emojiPlaceholder: emojiPlaceholder, emojiAction: emojiAction, emojiRequired: emojiRequired, titleFont: .regular, value: value, characterLimit: characterLimit)
++    contentNode.complete = {
++        applyImpl?()
++    }
++    applyImpl = { [weak contentNode] in
++        guard let contentNode else {
++            return
++        }
++        let file = contentNode.currentFile
++        if (file == nil && emojiRequired) || contentNode.value.count > characterLimit {
++            contentNode.animateError()
++            return
++        }
++        dismissImpl?(true)
++        apply(contentNode.value, file)
++    }
++    
++    let controller = AlertController(theme: AlertControllerTheme(presentationData: presentationData), contentNode: contentNode)
++    let presentationDataDisposable = context.sharedContext.presentationData.start(next: { [weak controller, weak contentNode] presentationData in
++        controller?.theme = AlertControllerTheme(presentationData: presentationData)
++        contentNode?.inputFieldNode.updateTheme(presentationData.theme)
++    })
++    controller.dismissed = { _ in
++        presentationDataDisposable.dispose()
++    }
++    dismissImpl = { [weak controller, weak contentNode] animated in
++        contentNode?.inputFieldNode.deactivateInput()
++        if animated {
++            controller?.dismissAnimated()
++        } else {
++            controller?.dismiss()
++        }
++    }
++    return (controller, { [weak contentNode] file in
++        // The keyboard is not brought back: the alert would move up while the picked emoji flies to it.
++        contentNode?.updateFile(file)
++    })
++}
+diff --git a/submodules/TelegramUI/Components/HeaderPanelContainerComponent/Sources/HeaderPanelContainerComponent.swift b/submodules/TelegramUI/Components/HeaderPanelContainerComponent/Sources/HeaderPanelContainerComponent.swift
+index 4d60d6cc71..5bebb41bb3 100644
+--- a/submodules/TelegramUI/Components/HeaderPanelContainerComponent/Sources/HeaderPanelContainerComponent.swift
++++ b/submodules/TelegramUI/Components/HeaderPanelContainerComponent/Sources/HeaderPanelContainerComponent.swift
+@@ -9,6 +9,12 @@ public protocol HeaderPanelContainerChildView: UIView {
+     func setOverlayContainerView(overlayContainerView: UIView)
+ }
+ 
++// A panel that doesn't need the full width. When it is the only one in the container, the glass background
++// shrinks to `fittedContentWidth` (the panel content has to start at its left edge).
++public protocol HeaderPanelContainerFittingView: UIView {
++    var fittedContentWidth: CGFloat? { get }
++}
++
+ public final class HeaderPanelContainerComponent: Component {
+     public final class Panel: Equatable {
+         public let key: AnyHashable
+@@ -245,6 +251,10 @@ public final class HeaderPanelContainerComponent: Component {
+                 self.panelViews.removeValue(forKey: key)
+             }
+             
++            if component.tabs == nil, component.panels.count == 1, let panelView = self.panelViews[component.panels[0].key], let fittingView = panelView.view.view as? HeaderPanelContainerFittingView, let fittedContentWidth = fittingView.fittedContentWidth {
++                size.width = min(size.width, fittedContentWidth + sideInset * 2.0)
++            }
++            
+             let backgroundSize = CGSize(width: size.width, height: max(40.0, size.height))
+             
+             transition.setFrame(view: self.backgroundContainer, frame: CGRect(origin: CGPoint(), size: backgroundSize).insetBy(dx: -32.0, dy: -32.0))
+diff --git a/submodules/TelegramUI/Components/LegacyChatHeaderPanelComponent/BUILD b/submodules/TelegramUI/Components/LegacyChatHeaderPanelComponent/BUILD
+index abdc05b2aa..9c45530f98 100644
+--- a/submodules/TelegramUI/Components/LegacyChatHeaderPanelComponent/BUILD
++++ b/submodules/TelegramUI/Components/LegacyChatHeaderPanelComponent/BUILD
+@@ -17,6 +17,7 @@ swift_library(
+         "//submodules/Components/ComponentDisplayAdapters",
+         "//submodules/ChatPresentationInterfaceState",
+         "//submodules/AccountContext",
++        "//submodules/TelegramUI/Components/HeaderPanelContainerComponent",
+     ],
+     visibility = [
+         "//visibility:public",
+diff --git a/submodules/TelegramUI/Components/LegacyChatHeaderPanelComponent/Sources/LegacyChatHeaderPanelComponent.swift b/submodules/TelegramUI/Components/LegacyChatHeaderPanelComponent/Sources/LegacyChatHeaderPanelComponent.swift
+index 941ae252d7..3004ae0ba9 100644
+--- a/submodules/TelegramUI/Components/LegacyChatHeaderPanelComponent/Sources/LegacyChatHeaderPanelComponent.swift
++++ b/submodules/TelegramUI/Components/LegacyChatHeaderPanelComponent/Sources/LegacyChatHeaderPanelComponent.swift
+@@ -7,12 +7,24 @@ import ComponentDisplayAdapters
+ import ChatPresentationInterfaceState
+ import AsyncDisplayKit
+ import AccountContext
++import HeaderPanelContainerComponent
+ 
+ open class ChatTitleAccessoryPanelNode: ASDisplayNode {
+     public typealias LayoutResult = ChatControllerCustomNavigationPanelNodeLayoutResult
+     
+     open var interfaceInteraction: ChatPanelInterfaceInteraction?
+     
++    // A panel whose content changes without a change of the chat state reports a new version here,
++    // otherwise the container skips its update.
++    open var contentVersion: Int {
++        return 0
++    }
++    
++    // The content width, for a panel that doesn't need the full width (see HeaderPanelContainerFittingView).
++    open var fittedContentWidth: CGFloat? {
++        return nil
++    }
++    
+     open func updateLayout(width: CGFloat, leftInset: CGFloat, rightInset: CGFloat, transition: ContainedViewLayoutTransition, interfaceState: ChatPresentationInterfaceState) -> LayoutResult {
+         preconditionFailure()
+     }
+@@ -21,6 +33,7 @@ open class ChatTitleAccessoryPanelNode: ASDisplayNode {
+ public final class LegacyChatHeaderPanelComponent: Component {
+     public let panelNode: ChatTitleAccessoryPanelNode
+     public let interfaceState: ChatPresentationInterfaceState
++    public let contentVersion: Int
+     
+     public init(
+         panelNode: ChatTitleAccessoryPanelNode,
+@@ -28,6 +41,7 @@ public final class LegacyChatHeaderPanelComponent: Component {
+     ) {
+         self.panelNode = panelNode
+         self.interfaceState = interfaceState
++        self.contentVersion = panelNode.contentVersion
+     }
+     
+     public static func ==(lhs: LegacyChatHeaderPanelComponent, rhs: LegacyChatHeaderPanelComponent) -> Bool {
+@@ -37,11 +51,18 @@ public final class LegacyChatHeaderPanelComponent: Component {
+         if lhs.interfaceState != rhs.interfaceState {
+             return false
+         }
++        if lhs.contentVersion != rhs.contentVersion {
++            return false
++        }
+         return true
+     }
+     
+-    public final class View: UIView {
++    public final class View: UIView, HeaderPanelContainerFittingView {
+         private var component: LegacyChatHeaderPanelComponent?
++        
++        public var fittedContentWidth: CGFloat? {
++            return self.component?.panelNode.fittedContentWidth
++        }
+         private weak var state: EmptyComponentState?
+         
+         public override init(frame: CGRect) {
+diff --git a/submodules/TelegramUI/Components/PinnedMessageTags/BUILD b/submodules/TelegramUI/Components/PinnedMessageTags/BUILD
+new file mode 100644
+index 0000000000..dcb4e995b9
+--- /dev/null
++++ b/submodules/TelegramUI/Components/PinnedMessageTags/BUILD
+@@ -0,0 +1,33 @@
++load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library")
++
++swift_library(
++    name = "PinnedMessageTags",
++    module_name = "PinnedMessageTags",
++    srcs = glob([
++        "Sources/**/*.swift",
++    ]),
++    copts = [
++        "-warnings-as-errors",
++    ],
++    deps = [
++        "//submodules/SSignalKit/SwiftSignalKit",
++        "//submodules/AsyncDisplayKit",
++        "//submodules/Display",
++        "//submodules/TelegramCore",
++        "//submodules/AccountContext",
++        "//submodules/TelegramPresentationData",
++        "//submodules/TelegramUIPreferences",
++        "//submodules/ContextUI",
++        "//submodules/ComponentFlow",
++        "//submodules/AppBundle",
++        "//submodules/ChatPresentationInterfaceState",
++        "//submodules/TelegramUI/Components/HorizontalTabsComponent",
++        "//submodules/TelegramUI/Components/LegacyChatHeaderPanelComponent",
++        "//submodules/TelegramUI/Components/EmojiStatusSelectionComponent",
++        "//submodules/TelegramUI/Components/EntityKeyboard",
++        "//submodules/TelegramUI/Components/Chat/SavedTagNameAlertController",
++    ],
++    visibility = [
++        "//visibility:public",
++    ],
++)
+diff --git a/submodules/TelegramUI/Components/PinnedMessageTags/Sources/PinnedMessageTagMenu.swift b/submodules/TelegramUI/Components/PinnedMessageTags/Sources/PinnedMessageTagMenu.swift
+new file mode 100644
+index 0000000000..16196c5ec4
+--- /dev/null
++++ b/submodules/TelegramUI/Components/PinnedMessageTags/Sources/PinnedMessageTagMenu.swift
+@@ -0,0 +1,199 @@
++import Foundation
++import UIKit
++import Display
++import SwiftSignalKit
++import TelegramCore
++import TelegramPresentationData
++import TelegramUIPreferences
++import AccountContext
++import ContextUI
++import ChatPresentationInterfaceState
++import EmojiStatusSelectionComponent
++import EntityKeyboard
++import SavedTagNameAlertController
++import AppBundle
++
++private let tagTitleLengthLimit = 16
++
++// The tag name with its emoji in front: the custom emoji entity takes the place of the first character.
++public func pinnedMessageTagTitle(_ tag: PinnedMessageTag) -> (text: String, entities: [MessageTextEntity]) {
++    let text = tag.title.isEmpty ? "#" : "# " + tag.title
++    return (text, [MessageTextEntity(range: 0 ..< 1, type: .CustomEmoji(stickerPack: nil, fileId: tag.fileId))])
++}
++
++// The emoji files of tags. Without a connection they come from what this device already has.
++func pinnedMessageTagFiles(context: AccountContext, fileIds: [Int64]) -> Signal<[Int64: TelegramMediaFile], NoError> {
++    if fileIds.isEmpty {
++        return .single([:])
++    }
++    return context.engine.stickers.resolveInlineStickers(fileIds: fileIds)
++    |> take(1)
++    |> timeout(1.5, queue: Queue.concurrentDefaultQueue(), alternate: context.engine.stickers.resolveInlineStickersLocal(fileIds: fileIds) |> take(1))
++}
++
++func pinnedMessageTagMenuIcon(_ name: String) -> (PresentationTheme) -> UIImage? {
++    return { theme in
++        return generateTintedImage(image: UIImage(bundleImageName: name), color: theme.actionSheet.primaryTextColor)
++    }
++}
++
++// "Add Tag" / "Change Tag" under "Unpin" in the menu of a message pinned in a private chat. It opens a submenu
++// with the account's tags, "New Tag" and, for a tagged message, "Remove Tag".
++public func pinnedMessageTagMenuItems(context: AccountContext, messageId: EngineMessage.Id, strings: PresentationStrings, interfaceInteraction: ChatPanelInterfaceInteraction) -> [ContextMenuItem] {
++    guard messageId.peerId.namespace == Namespaces.Peer.CloudUser else {
++        return []
++    }
++    let manager = PinnedMessageTagsManager.shared(context: context)
++    let currentTag = manager.current.tag(messageId: messageId)
++
++    return [.action(ContextMenuActionItem(text: currentTag == nil ? strings.PinnedTags_AddTag : strings.PinnedTags_ChangeTag, icon: pinnedMessageTagMenuIcon("Chat/Context Menu/Tag"), action: { c, _ in
++        let items = manager.value
++        |> take(1)
++        |> mapToSignal { value -> Signal<(PinnedMessageTags, [Int64: TelegramMediaFile]), NoError> in
++            return pinnedMessageTagFiles(context: context, fileIds: value.tags.map(\.fileId))
++            |> map { files in
++                return (value, files)
++            }
++        }
++        |> map { value, files -> ContextController.Items in
++            let selectedTagId = value.tag(messageId: messageId)?.id
++            var items: [ContextMenuItem] = []
++
++            items.append(.action(ContextMenuActionItem(text: strings.Common_Back, icon: pinnedMessageTagMenuIcon("Chat/Context Menu/Back"), iconPosition: .left, action: { c, _ in
++                c?.popItems()
++            })))
++            items.append(.separator)
++
++            for tag in value.tags {
++                let title = pinnedMessageTagTitle(tag)
++                let isSelected = tag.id == selectedTagId
++                items.append(.action(ContextMenuActionItem(text: title.text, entities: title.entities, entityFiles: files, enableEntityAnimations: true, icon: { theme in
++                    // An empty icon of the same size keeps the unchecked tags in line with the checked one.
++                    let check = UIImage(bundleImageName: "Chat/Context Menu/Check")
++                    if isSelected {
++                        return generateTintedImage(image: check, color: theme.actionSheet.primaryTextColor)
++                    }
++                    return generateImage(check?.size ?? CGSize(width: 24.0, height: 24.0), rotatedContext: { size, context in
++                        context.clear(CGRect(origin: CGPoint(), size: size))
++                    })
++                }, action: { _, f in
++                    f(.default)
++                    manager.update { value in
++                        value.setTag(id: tag.id, messageId: messageId)
++                    }
++                })))
++            }
++
++            items.append(.action(ContextMenuActionItem(text: strings.PinnedTags_NewTag, icon: pinnedMessageTagMenuIcon("Chat/Context Menu/Add"), action: { _, f in
++                f(.default)
++                // The alert is presented once the menu has gone.
++                Queue.mainQueue().after(0.3) {
++                    openPinnedMessageTagEditor(context: context, editingTag: nil, present: { controller in
++                        interfaceInteraction.presentController(controller, nil)
++                    }, completion: { tag in
++                        manager.update { value in
++                            value.tags.append(tag)
++                            value.setTag(id: tag.id, messageId: messageId)
++                        }
++                    })
++                }
++            })))
++
++            if selectedTagId != nil {
++                items.append(.action(ContextMenuActionItem(text: strings.PinnedTags_RemoveTag, icon: pinnedMessageTagMenuIcon("Chat/Context Menu/TagRemove"), action: { _, f in
++                    f(.default)
++                    manager.update { value in
++                        value.setTag(id: nil, messageId: messageId)
++                    }
++                })))
++            }
++            return ContextController.Items(content: .list(items))
++        }
++        c?.pushItems(items: items)
++    }))]
++}
++
++// The emoji picker of the emoji status, with all custom emoji. It opens from `sourceView`; the picked emoji flies
++// into the view `destinationView` returns.
++func openPinnedMessageTagEmojiPicker(context: AccountContext, sourceView: UIView, destinationView: @escaping () -> UIView?, currentFileId: Int64?, present: @escaping (ViewController) -> Void, completion: @escaping (TelegramMediaFile) -> Void) {
++    let controller = EmojiStatusSelectionController(
++        context: context,
++        mode: .backgroundSelection(completion: { file in
++            if let file {
++                completion(file)
++            }
++        }),
++        sourceView: sourceView,
++        emojiContent: EmojiPagerContentComponent.emojiInputData(
++            context: context,
++            animationCache: context.animationCache,
++            animationRenderer: context.animationRenderer,
++            isStandalone: false,
++            subject: .status,
++            hasTrending: false,
++            topReactionItems: [],
++            areUnicodeEmojiEnabled: false,
++            areCustomEmojiEnabled: true,
++            chatPeerId: context.account.peerId,
++            selectedItems: Set(currentFileId.flatMap { [AnyHashable(EngineMedia.Id(namespace: Namespaces.Media.CloudFile, id: $0))] } ?? []),
++            topStatusTitle: nil,
++            backgroundIconColor: nil
++        ),
++        currentSelection: currentFileId,
++        color: nil,
++        destinationItemView: {
++            return destinationView()
++        }
++    )
++    present(controller)
++}
++
++// The alert for a new tag (`editingTag == nil`) or for renaming one: the Saved Messages tag alert, with a
++// tappable emoji in the text field that opens the emoji picker. `completion` gets the resulting tag. A new tag needs
++// an emoji; an edited one keeps its emoji even if its file can't be loaded right now.
++func openPinnedMessageTagEditor(context: AccountContext, editingTag: PinnedMessageTag?, present: @escaping (ViewController) -> Void, completion: @escaping (PinnedMessageTag) -> Void) {
++    let presentationData = context.sharedContext.currentPresentationData.with { $0 }
++    let _ = (pinnedMessageTagFiles(context: context, fileIds: editingTag.flatMap { [$0.fileId] } ?? [])
++    |> deliverOnMainQueue).startStandalone(next: { files in
++        var currentFileId = editingTag?.fileId
++        var updateFileImpl: ((TelegramMediaFile) -> Void)?
++        // Until an emoji is picked, the field shows the tag icon in the accent color, at the size of the emoji.
++        let placeholder = UIImage(bundleImageName: "Chat/Context Menu/Tag").flatMap { image -> UIImage? in
++            let side: CGFloat = 20.0
++            let scale = min(side / image.size.width, side / image.size.height)
++            let size = CGSize(width: floor(image.size.width * scale), height: floor(image.size.height * scale))
++            return generateTintedImage(image: generateImage(size, rotatedContext: { size, context in
++                context.clear(CGRect(origin: CGPoint(), size: size))
++                UIGraphicsPushContext(context)
++                image.draw(in: CGRect(origin: CGPoint(), size: size))
++                UIGraphicsPopContext()
++            }), color: presentationData.theme.actionSheet.controlAccentColor)
++        }
++        let editor = savedTagEditorAlertController(
++            context: context,
++            text: editingTag == nil ? presentationData.strings.PinnedTags_NewTag : presentationData.strings.PinnedTags_EditTag,
++            subtext: presentationData.strings.PinnedTags_EditorText,
++            value: editingTag?.title ?? "",
++            file: editingTag.flatMap { files[$0.fileId] },
++            emojiPlaceholder: placeholder,
++            emojiRequired: editingTag == nil,
++            characterLimit: tagTitleLengthLimit,
++            emojiAction: { sourceView, destinationView in
++                openPinnedMessageTagEmojiPicker(context: context, sourceView: sourceView, destinationView: destinationView, currentFileId: currentFileId, present: present, completion: { file in
++                    currentFileId = file.fileId.id
++                    updateFileImpl?(file)
++                })
++            },
++            apply: { title, file in
++                let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
++                if let editingTag {
++                    completion(PinnedMessageTag(id: editingTag.id, title: title, fileId: file?.fileId.id ?? editingTag.fileId))
++                } else if let file {
++                    completion(PinnedMessageTag(id: Int64.random(in: 1 ... Int64.max), title: title, fileId: file.fileId.id))
++                }
++            }
++        )
++        updateFileImpl = editor.updateFile
++        present(editor.controller)
++    })
++}
+diff --git a/submodules/TelegramUI/Components/PinnedMessageTags/Sources/PinnedMessageTagsManager.swift b/submodules/TelegramUI/Components/PinnedMessageTags/Sources/PinnedMessageTagsManager.swift
+new file mode 100644
+index 0000000000..f09d348171
+--- /dev/null
++++ b/submodules/TelegramUI/Components/PinnedMessageTags/Sources/PinnedMessageTagsManager.swift
+@@ -0,0 +1,118 @@
++import Foundation
++import SwiftSignalKit
++import TelegramCore
++import AccountContext
++import TelegramUIPreferences
++
++// Pinned messages in a private chat can be tagged: a tag is a custom emoji with a name, picked from the
++// message menu ("Add Tag"). The list of pinned messages then shows a row "All / tags" above the messages
++// that filters them by tag; holding a tag in the row renames it, changes its emoji or deletes it.
++// The tags are stored on this device (TelegramUIPreferences, PinnedMessageTags).
++public final class PinnedMessageTagsManager {
++    private static let managers = Atomic<[EnginePeer.Id: PinnedMessageTagsManager]>(value: [:])
++
++    // One manager per account (a new one after the account signs in again). Any thread may read `current`
++    // (message menus are built off the main thread); the rest is used on the main thread.
++    public static func shared(context: AccountContext) -> PinnedMessageTagsManager {
++        var removed: [PinnedMessageTagsManager] = []
++        let manager = self.managers.modify { managers in
++            var managers = managers
++            // Managers of accounts that are gone: they would keep the account's database open.
++            for (peerId, manager) in managers where manager.context == nil {
++                removed.append(manager)
++                managers.removeValue(forKey: peerId)
++            }
++            if managers[context.account.peerId]?.context !== context {
++                if let previous = managers[context.account.peerId] {
++                    removed.append(previous)
++                }
++                managers[context.account.peerId] = PinnedMessageTagsManager(context: context)
++            }
++            return managers
++        }[context.account.peerId]!
++        // Released here, outside of the lock: their deinit stops their subscriptions.
++        withExtendedLifetime(removed) {}
++        return manager
++    }
++
++    private weak var context: AccountContext?
++    private let currentValue = Atomic<PinnedMessageTags>(value: .default)
++    private let valuePromise = Promise<PinnedMessageTags>()
++    private var disposable: Disposable?
++
++    // The tag picked in the row above the pinned messages of a chat (none means "All").
++    private var selectedTagIds: [EnginePeer.Id: Int64] = [:]
++    private let selectedTagIdsPromise = ValuePromise<[EnginePeer.Id: Int64]>([:], ignoreRepeated: true)
++    // The tags that are on the pinned messages of a chat right now, which the row shows.
++    private var visibleTags: [EnginePeer.Id: [PinnedMessageTag]] = [:]
++    // Changes whenever the row has to be drawn again.
++    public private(set) var rowVersion: Int = 0
++
++    private init(context: AccountContext) {
++        self.context = context
++
++        let value = context.engine.data.subscribe(TelegramEngine.EngineData.Item.Configuration.ApplicationSpecificPreference(key: ApplicationSpecificPreferencesKeys.pinnedMessageTags))
++        |> map { entry -> PinnedMessageTags in
++            return entry?.get(PinnedMessageTags.self) ?? PinnedMessageTags.default
++        }
++        |> distinctUntilChanged
++        self.valuePromise.set(value)
++        self.disposable = value.startStrict(next: { [weak self] value in
++            let _ = self?.currentValue.swap(value)
++        })
++    }
++
++    deinit {
++        self.disposable?.dispose()
++    }
++
++    public var current: PinnedMessageTags {
++        return self.currentValue.with { $0 }
++    }
++
++    public var value: Signal<PinnedMessageTags, NoError> {
++        return self.valuePromise.get()
++    }
++
++    public func update(_ f: @escaping (inout PinnedMessageTags) -> Void) {
++        guard let context = self.context else {
++            return
++        }
++        let _ = updatePinnedMessageTags(engine: context.engine, { value in
++            var value = value
++            f(&value)
++            return value
++        }).startStandalone()
++    }
++
++    public func selectedTagId(peerId: EnginePeer.Id) -> Int64? {
++        return self.selectedTagIds[peerId]
++    }
++
++    public func selectedTagIdSignal(peerId: EnginePeer.Id) -> Signal<Int64?, NoError> {
++        return self.selectedTagIdsPromise.get()
++        |> map { $0[peerId] }
++        |> distinctUntilChanged
++    }
++
++    public func selectTag(id: Int64?, peerId: EnginePeer.Id) {
++        if self.selectedTagIds[peerId] == id {
++            return
++        }
++        self.selectedTagIds[peerId] = id
++        self.rowVersion += 1
++        self.selectedTagIdsPromise.set(self.selectedTagIds)
++    }
++
++    public func visibleTags(peerId: EnginePeer.Id) -> [PinnedMessageTag] {
++        return self.visibleTags[peerId] ?? []
++    }
++
++    public func setVisibleTags(_ tags: [PinnedMessageTag], peerId: EnginePeer.Id) {
++        if self.visibleTags[peerId] ?? [] == tags {
++            return
++        }
++        self.visibleTags[peerId] = tags.isEmpty ? nil : tags
++        self.rowVersion += 1
++    }
++}
+diff --git a/submodules/TelegramUI/Components/PinnedMessageTags/Sources/PinnedMessageTagsPanelNode.swift b/submodules/TelegramUI/Components/PinnedMessageTags/Sources/PinnedMessageTagsPanelNode.swift
+new file mode 100644
+index 0000000000..66ee583f57
+--- /dev/null
++++ b/submodules/TelegramUI/Components/PinnedMessageTags/Sources/PinnedMessageTagsPanelNode.swift
+@@ -0,0 +1,183 @@
++import Foundation
++import UIKit
++import Display
++import SwiftSignalKit
++import TelegramCore
++import TelegramPresentationData
++import TelegramUIPreferences
++import AccountContext
++import ContextUI
++import ChatPresentationInterfaceState
++import ComponentFlow
++import HorizontalTabsComponent
++import LegacyChatHeaderPanelComponent
++import AppBundle
++
++// The row "All / tags" above the pinned messages of a private chat. It is shown while at least one pinned
++// message has a tag, and its glass background is only as wide as the tags.
++public final class PinnedMessageTagsPanelNode: ChatTitleAccessoryPanelNode {
++    private let context: AccountContext
++    private let peerId: EnginePeer.Id
++    private let manager: PinnedMessageTagsManager
++    private let tabs = ComponentView<Empty>()
++    private var fittedWidth: CGFloat?
++
++    public init(context: AccountContext, peerId: EnginePeer.Id) {
++        self.context = context
++        self.peerId = peerId
++        self.manager = PinnedMessageTagsManager.shared(context: context)
++
++        super.init()
++    }
++
++    // The row changes (selection, tags) without a change of the chat state.
++    override public var contentVersion: Int {
++        return self.manager.rowVersion
++    }
++
++    override public var fittedContentWidth: CGFloat? {
++        return self.fittedWidth
++    }
++
++    override public func updateLayout(width: CGFloat, leftInset: CGFloat, rightInset: CGFloat, transition: ContainedViewLayoutTransition, interfaceState: ChatPresentationInterfaceState) -> LayoutResult {
++        let manager = self.manager
++        let peerId = self.peerId
++        let tags = manager.visibleTags(peerId: peerId)
++        let selectedTagId = manager.selectedTagId(peerId: peerId)
++
++        var items: [HorizontalTabsComponent.Tab] = []
++        items.append(HorizontalTabsComponent.Tab(
++            id: AnyHashable(Int64(0)),
++            content: .title(HorizontalTabsComponent.Tab.Title(text: interfaceState.strings.ChatList_Tabs_All, entities: [], enableAnimations: false)),
++            badge: nil,
++            action: {
++                manager.selectTag(id: nil, peerId: peerId)
++            }
++        ))
++        for tag in tags {
++            let title = pinnedMessageTagTitle(tag)
++            items.append(HorizontalTabsComponent.Tab(
++                id: AnyHashable(tag.id),
++                content: .title(HorizontalTabsComponent.Tab.Title(text: title.text, entities: title.entities, enableAnimations: true)),
++                badge: nil,
++                action: {
++                    manager.selectTag(id: tag.id, peerId: peerId)
++                },
++                contextAction: { [weak self] sourceView, gesture in
++                    self?.openTagMenu(tag: tag, sourceView: sourceView, gesture: gesture)
++                }
++            ))
++        }
++
++        let tabsSize = self.tabs.update(
++            transition: ComponentTransition(transition),
++            component: AnyComponent(HorizontalTabsComponent(
++                context: self.context,
++                theme: interfaceState.theme,
++                tabs: items,
++                selectedTab: AnyHashable(selectedTagId ?? 0),
++                isEditing: false,
++                layout: .fit,
++                liftWhileSwitching: false
++            )),
++            environment: {},
++            containerSize: CGSize(width: max(1.0, width - leftInset - rightInset), height: 40.0)
++        )
++        self.fittedWidth = tabsSize.width
++        if let tabsView = self.tabs.view as? HorizontalTabsComponent.View {
++            if tabsView.superview == nil {
++                self.view.addSubview(tabsView)
++                tabsView.setOverlayContainerView(overlayContainerView: self.view)
++            }
++            transition.updateFrame(view: tabsView, frame: CGRect(origin: CGPoint(x: leftInset, y: 0.0), size: tabsSize))
++            tabsView.updateTabSwitchFraction(fraction: 0.0, isDragging: false, transition: ComponentTransition(transition))
++        }
++        return LayoutResult(backgroundHeight: tabsSize.height, insetHeight: tabsSize.height, hitTestSlop: 0.0)
++    }
++
++    private func openTagMenu(tag: PinnedMessageTag, sourceView: ContextExtractedContentContainingView, gesture: ContextGesture?) {
++        guard let interfaceInteraction = self.interfaceInteraction else {
++            return
++        }
++        let context = self.context
++        let manager = self.manager
++        let peerId = self.peerId
++        let presentationData = context.sharedContext.currentPresentationData.with { $0 }
++        let strings = presentationData.strings
++        let present: (ViewController) -> Void = { controller in
++            interfaceInteraction.presentController(controller, nil)
++        }
++
++        var items: [ContextMenuItem] = []
++        items.append(.action(ContextMenuActionItem(text: strings.Chat_EditTagTitle_TitleEdit, icon: pinnedMessageTagMenuIcon("Chat/Context Menu/TagEditName"), action: { _, f in
++            f(.default)
++            Queue.mainQueue().after(0.3) {
++                openPinnedMessageTagEditor(context: context, editingTag: tag, present: present, completion: { updatedTag in
++                    manager.update { value in
++                        if let index = value.tags.firstIndex(where: { $0.id == updatedTag.id }) {
++                            value.tags[index] = updatedTag
++                        }
++                    }
++                })
++            }
++        })))
++        items.append(.action(ContextMenuActionItem(text: strings.PinnedTags_ChangeEmoji, icon: pinnedMessageTagMenuIcon("Chat/Context Menu/Tag"), action: { [weak sourceView] _, f in
++            f(.default)
++            Queue.mainQueue().after(0.3) {
++                guard let sourceView else {
++                    return
++                }
++                openPinnedMessageTagEmojiPicker(context: context, sourceView: sourceView.contentView, destinationView: { [weak sourceView] in
++                    return sourceView?.contentView
++                }, currentFileId: tag.fileId, present: present, completion: { file in
++                    manager.update { value in
++                        if let index = value.tags.firstIndex(where: { $0.id == tag.id }) {
++                            value.tags[index].fileId = file.fileId.id
++                        }
++                    }
++                })
++            }
++        })))
++        items.append(.separator)
++        items.append(.action(ContextMenuActionItem(text: strings.PinnedTags_DeleteTag, textColor: .destructive, icon: { theme in
++            return generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Delete"), color: theme.contextMenu.destructiveColor)
++        }, action: { _, f in
++            f(.default)
++            if manager.selectedTagId(peerId: peerId) == tag.id {
++                manager.selectTag(id: nil, peerId: peerId)
++            }
++            manager.update { value in
++                value.removeTag(id: tag.id)
++            }
++        })))
++
++        let controller = makeContextController(
++            context: context,
++            presentationData: presentationData,
++            source: .reference(PinnedMessageTagReferenceContentSource(sourceView: sourceView)),
++            items: .single(ContextController.Items(content: .list(items))),
++            recognizer: nil,
++            gesture: gesture
++        )
++        interfaceInteraction.presentGlobalOverlayController(controller, nil)
++    }
++}
++
++private final class PinnedMessageTagReferenceContentSource: ContextReferenceContentSource {
++    let keepInPlace: Bool = true
++    let actionsHorizontalAlignment: ContextActionsHorizontalAlignment = .center
++
++    private let sourceView: ContextExtractedContentContainingView
++
++    init(sourceView: ContextExtractedContentContainingView) {
++        self.sourceView = sourceView
++    }
++
++    func transitionInfo() -> ContextControllerReferenceViewInfo? {
++        return ContextControllerReferenceViewInfo(
++            referenceView: self.sourceView.contentView,
++            contentAreaInScreenSpace: UIScreen.main.bounds,
++            actionsPosition: .bottom
++        )
++    }
++}
+diff --git a/submodules/TelegramUI/Sources/Chat/ChatControllerLoadDisplayNode.swift b/submodules/TelegramUI/Sources/Chat/ChatControllerLoadDisplayNode.swift
+index f5823d125a..2c785f4ead 100644
+--- a/submodules/TelegramUI/Sources/Chat/ChatControllerLoadDisplayNode.swift
++++ b/submodules/TelegramUI/Sources/Chat/ChatControllerLoadDisplayNode.swift
+@@ -764,6 +764,9 @@ extension ChatControllerImpl {
+                     return
+                 }
+                 if case .empty = state {
++                    if self.deferClosingEmptyPinnedMessagesForTags() {
++                        return
++                    }
+                     if self.chatLocation.peerId == self.context.account.peerId {
+                         if self.chatDisplayNode.historyNode.tag != nil {
+                             self.updateChatPresentationInterfaceState(animated: true, interactive: false, { state in
+diff --git a/submodules/TelegramUI/Sources/Chat/ChatControllerOpenMessageContextMenu.swift b/submodules/TelegramUI/Sources/Chat/ChatControllerOpenMessageContextMenu.swift
+index 5bf77c1bbd..7172a894db 100644
+--- a/submodules/TelegramUI/Sources/Chat/ChatControllerOpenMessageContextMenu.swift
++++ b/submodules/TelegramUI/Sources/Chat/ChatControllerOpenMessageContextMenu.swift
+@@ -336,7 +336,7 @@ extension ChatControllerImpl {
+                 }
+                 
+                 let isSecret = self.presentationInterfaceState.copyProtectionEnabled || self.presentationInterfaceState.myCopyProtectionEnabled || self.chatLocation.peerId?.namespace == Namespaces.Peer.SecretChat
+-                let controller = makeContextController(presentationData: self.presentationData, source: source, items: actionsSignal, recognizer: recognizer, gesture: gesture, disableScreenshots: isSecret, hideReactionPanelTail: hideReactionPanelTail)
++                let controller = makeContextController(context: self.context, presentationData: self.presentationData, source: source, items: actionsSignal, recognizer: recognizer, gesture: gesture, disableScreenshots: isSecret, hideReactionPanelTail: hideReactionPanelTail)
+                 controller.dismissed = { [weak self] in
+                     self?.canReadHistory.set(true)
+                 }
+diff --git a/submodules/TelegramUI/Sources/Chat/ChatControllerOpenPollContextMenu.swift b/submodules/TelegramUI/Sources/Chat/ChatControllerOpenPollContextMenu.swift
+index 905080f01c..e44222a907 100644
+--- a/submodules/TelegramUI/Sources/Chat/ChatControllerOpenPollContextMenu.swift
++++ b/submodules/TelegramUI/Sources/Chat/ChatControllerOpenPollContextMenu.swift
+@@ -280,6 +280,7 @@ extension ChatControllerImpl {
+             }
+             
+             let contextController = makeContextController(
++                context: self.context,
+                 presentationData: self.presentationData,
+                 configuration: ContextController.Configuration(
+                     sources: sources,
+diff --git a/submodules/TelegramUI/Sources/Chat/ChatControllerOpenTodoContextMenu.swift b/submodules/TelegramUI/Sources/Chat/ChatControllerOpenTodoContextMenu.swift
+index 363fd5a46a..f7c1baad25 100644
+--- a/submodules/TelegramUI/Sources/Chat/ChatControllerOpenTodoContextMenu.swift
++++ b/submodules/TelegramUI/Sources/Chat/ChatControllerOpenTodoContextMenu.swift
+@@ -267,6 +267,7 @@ extension ChatControllerImpl {
+             }
+             
+             let contextController = makeContextController(
++                context: self.context,
+                 presentationData: self.presentationData,
+                 configuration: ContextController.Configuration(
+                     sources: sources,
+diff --git a/submodules/TelegramUI/Sources/ChatController.swift b/submodules/TelegramUI/Sources/ChatController.swift
+index 5fe58bbf51..8366ef126e 100644
+--- a/submodules/TelegramUI/Sources/ChatController.swift
++++ b/submodules/TelegramUI/Sources/ChatController.swift
+@@ -257,6 +257,8 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
+     public internal(set) var chatLocation: ChatLocation
+     public internal(set) var subject: ChatControllerSubject?
+     var initialTextInputState: ChatTextInputState?
++    // The tags filter of the pinned messages list (ChatControllerPinnedMessageTags.swift).
++    var pinnedMessageTagsDisposable: Disposable?
+     
+     var botStart: ChatControllerInitialBotStart?
+     var attachBotStart: ChatControllerInitialAttachBotStart?
+@@ -7085,6 +7087,7 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
+         let _ = ChatControllerCount.modify { value in
+             return value - 1
+         }
++        self.pinnedMessageTagsDisposable?.dispose()
+ 
+         self.richTextCheckboxCompletionObserver?.dispose()
+         for (_, timer) in self.richTextCheckboxDebounceTimers {
+@@ -7686,6 +7689,7 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
+     
+     override public func loadDisplayNode() {
+         self.loadDisplayNodeImpl()
++        self.setupPinnedMessageTags()
+         self.galleryPresentationContext.view = self.view
+         self.galleryPresentationContext.controllersUpdated = { [weak self] _ in
+             guard let self else {
+diff --git a/submodules/TelegramUI/Sources/ChatControllerNode.swift b/submodules/TelegramUI/Sources/ChatControllerNode.swift
+index ee5838449d..bf8bde367c 100644
+--- a/submodules/TelegramUI/Sources/ChatControllerNode.swift
++++ b/submodules/TelegramUI/Sources/ChatControllerNode.swift
+@@ -2767,7 +2767,8 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
+         
+         if let headerPanelsComponentView = self.headerPanelsView?.view, let headerPanelsSize {
+             sidePanelTopInset += 8.0
+-            let headerPanelsFrame = CGRect(origin: CGPoint(x: layout.safeInsets.left, y: sidePanelTopInset), size: headerPanelsSize)
++            // A narrow panel (the pinned message tags row) is centered.
++            let headerPanelsFrame = CGRect(origin: CGPoint(x: layout.safeInsets.left + floorToScreenPixels((layout.size.width - layout.safeInsets.left - layout.safeInsets.right - headerPanelsSize.width) * 0.5), y: sidePanelTopInset), size: headerPanelsSize)
+             var headerPanelsTransition = ComponentTransition(transition)
+             if headerPanelsComponentView.superview == nil {
+                 headerPanelsTransition.animateAlpha(view: headerPanelsComponentView, from: 0.0, to: 1.0)
+diff --git a/submodules/TelegramUI/Sources/ChatControllerPinnedMessageTags.swift b/submodules/TelegramUI/Sources/ChatControllerPinnedMessageTags.swift
+new file mode 100644
+index 0000000000..b3b624f780
+--- /dev/null
++++ b/submodules/TelegramUI/Sources/ChatControllerPinnedMessageTags.swift
+@@ -0,0 +1,98 @@
++import Foundation
++import SwiftSignalKit
++import TelegramCore
++import AccountContext
++import PinnedMessageTags
++
++extension ChatControllerImpl {
++    // Called when the chat screen loads. Reads the tags early, as the menu of a pinned message needs them right
++    // away. In the list of pinned messages of a private chat, it shows the tags row (see
++    // ChatInterfaceTitlePanelNodes) and hides the messages that don't have the picked tag.
++    func setupPinnedMessageTags() {
++        let manager = PinnedMessageTagsManager.shared(context: self.context)
++
++        guard case .pinnedMessages = self.subject, case let .peer(peerId) = self.chatLocation, peerId.namespace == Namespaces.Peer.CloudUser else {
++            return
++        }
++        manager.selectTag(id: nil, peerId: peerId)
++        manager.setVisibleTags([], peerId: peerId)
++        // Filtered messages leave the list without the deletion effect.
++        self.chatDisplayNode.historyNode.ignoreMessageIdsAnimateAsDeletion = false
++
++        let pinnedMessageIds = self.context.account.viewTracker.aroundMessageHistoryViewForLocation(.peer(peerId: peerId, threadId: nil), index: .upperBound, anchorIndex: .upperBound, count: 1000, clipHoles: false, fixedCombinedReadStates: nil, tag: .tag(.pinned))
++        |> filter { view, _, _ in
++            return !view.isLoading
++        }
++        |> map { view, _, _ -> Set<EngineMessage.Id> in
++            return Set(view.entries.map { $0.message.id })
++        }
++        |> distinctUntilChanged
++
++        var previousRowVersion: Int?
++        self.pinnedMessageTagsDisposable = (combineLatest(queue: .mainQueue(), manager.value, manager.selectedTagIdSignal(peerId: peerId), pinnedMessageIds, self.chatDisplayNode.historyNode.pendingRemovedMessagesSignal)
++        |> deliverOnMainQueue).startStrict(next: { [weak self] value, selectedTagId, pinnedMessageIds, pendingRemovedMessageIds in
++            guard let self else {
++                return
++            }
++            // A message unpinned from this list stays pinned until its undo toast goes away; it already counts as unpinned.
++            let pinnedMessageIds = pinnedMessageIds.subtracting(pendingRemovedMessageIds)
++
++            // The row shows the tags that are on at least one pinned message.
++            var usedTagIds = Set<Int64>()
++            for messageId in pinnedMessageIds {
++                if let tagId = value.messageTags[messageId] {
++                    usedTagIds.insert(tagId)
++                }
++            }
++            manager.setVisibleTags(value.tags.filter { usedTagIds.contains($0.id) }, peerId: peerId)
++
++            var effectiveTagId = selectedTagId
++            if let tagId = effectiveTagId, !usedTagIds.contains(tagId) {
++                effectiveTagId = nil
++                manager.selectTag(id: nil, peerId: peerId)
++            }
++
++            var hiddenMessageIds = Set<EngineMessage.Id>()
++            if let tagId = effectiveTagId {
++                for messageId in pinnedMessageIds where value.messageTags[messageId] != tagId {
++                    hiddenMessageIds.insert(messageId)
++                }
++            }
++            var updated = false
++            if self.chatDisplayNode.historyNode.ignoreMessageIds != hiddenMessageIds {
++                self.chatDisplayNode.historyNode.ignoreMessageIds = hiddenMessageIds
++                updated = true
++            }
++            if previousRowVersion != manager.rowVersion {
++                previousRowVersion = manager.rowVersion
++                updated = true
++            }
++            if updated {
++                self.requestLayout(transition: .animated(duration: 0.4, curve: .spring))
++            }
++        })
++    }
++    
++    // The pinned messages list closes itself once it is empty. While it has the tags row, it may be empty only
++    // because of the filter, or because of a filter that has just been switched off: then it goes back to all
++    // messages and closes only if it is still empty a moment later. Returns true when it takes over the closing.
++    func deferClosingEmptyPinnedMessagesForTags() -> Bool {
++        guard case .pinnedMessages = self.subject, case let .peer(peerId) = self.chatLocation, peerId.namespace == Namespaces.Peer.CloudUser else {
++            return false
++        }
++        let manager = PinnedMessageTagsManager.shared(context: self.context)
++        guard manager.selectedTagId(peerId: peerId) != nil || !manager.visibleTags(peerId: peerId).isEmpty || !self.chatDisplayNode.historyNode.ignoreMessageIds.isEmpty else {
++            return false
++        }
++        manager.selectTag(id: nil, peerId: peerId)
++        Queue.mainQueue().after(0.4, { [weak self] in
++            guard let self else {
++                return
++            }
++            if case .empty = self.chatDisplayNode.historyNode.loadState, self.chatDisplayNode.historyNode.ignoreMessageIds.isEmpty {
++                self.dismiss()
++            }
++        })
++        return true
++    }
++}
+diff --git a/submodules/TelegramUI/Sources/ChatHistoryListNode.swift b/submodules/TelegramUI/Sources/ChatHistoryListNode.swift
+index 0fb1ee1031..e8aaa50079 100644
+--- a/submodules/TelegramUI/Sources/ChatHistoryListNode.swift
++++ b/submodules/TelegramUI/Sources/ChatHistoryListNode.swift
+@@ -634,6 +634,10 @@ public final class ChatHistoryListNodeImpl: ASDisplayNode, ChatHistoryNode, Chat
+         }
+     }
+     
++    // False when `ignoreMessageIds` is a filter (pinned message tags): hidden messages leave without the
++    // deletion effect.
++    var ignoreMessageIdsAnimateAsDeletion: Bool = true
++    
+     private let chatHasBotsPromise = ValuePromise<Bool>(false)
+     var chatHasBots: Bool = false {
+         didSet {
+@@ -712,6 +716,10 @@ public final class ChatHistoryListNodeImpl: ASDisplayNode, ChatHistoryNode, Chat
+         }
+     }
+     
++    var pendingRemovedMessagesSignal: Signal<Set<MessageId>, NoError> {
++        return self.pendingRemovedMessagesPromise.get()
++    }
++    
+     private let justSentTextMessagePromise = ValuePromise<Bool>(false)
+     var justSentTextMessage: Bool = false {
+         didSet {
+@@ -4267,7 +4275,7 @@ public final class ChatHistoryListNodeImpl: ASDisplayNode, ChatHistoryNode, Chat
+                     }
+                 }
+             }
+-            for id in self.ignoreMessageIds {
++            for id in self.ignoreMessageIds where self.ignoreMessageIdsAnimateAsDeletion {
+                 inner: for (stableId, listId) in maybeRemovedInteractivelyMessageIds {
+                     if listId == id {
+                         expiredMessageStableIds.insert(stableId)
+diff --git a/submodules/TelegramUI/Sources/ChatInterfaceStateContextMenus.swift b/submodules/TelegramUI/Sources/ChatInterfaceStateContextMenus.swift
+index 1ade8c01dc..37c62996e7 100644
+--- a/submodules/TelegramUI/Sources/ChatInterfaceStateContextMenus.swift
++++ b/submodules/TelegramUI/Sources/ChatInterfaceStateContextMenus.swift
+@@ -38,6 +38,7 @@ import ChatMessageItemView
+ import ChatMessageBubbleItemNode
+ import AdsInfoScreen
+ import AdsReportScreen
++import PinnedMessageTags
+ import WalletContext
+  
+ private struct MessageContextMenuData {
+@@ -1755,6 +1756,7 @@ func contextMenuForChatPresentationInterfaceState(chatPresentationInterfaceState
+                 }, action: { c, _ in
+                     interfaceInteraction.unpinMessage(pinnedSelectedMessageId, false, c)
+                 })))
++                actions.append(contentsOf: pinnedMessageTagMenuItems(context: context, messageId: pinnedSelectedMessageId, strings: chatPresentationInterfaceState.strings, interfaceInteraction: interfaceInteraction))
+             } else {
+                 actions.append(.action(ContextMenuActionItem(text: chatPresentationInterfaceState.strings.Conversation_Pin, icon: { theme in
+                     return generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Pin"), color: theme.actionSheet.primaryTextColor)
+diff --git a/submodules/TelegramUI/Sources/ChatInterfaceTitlePanelNodes.swift b/submodules/TelegramUI/Sources/ChatInterfaceTitlePanelNodes.swift
+index 850d1c9245..3c4a2d6559 100644
+--- a/submodules/TelegramUI/Sources/ChatInterfaceTitlePanelNodes.swift
++++ b/submodules/TelegramUI/Sources/ChatInterfaceTitlePanelNodes.swift
+@@ -7,6 +7,7 @@ import ChatControllerInteraction
+ import ComponentFlow
+ import ChatSideTopicsPanel
+ import LegacyChatHeaderPanelComponent
++import PinnedMessageTags
+ 
+ func titlePanelForChatPresentationInterfaceState(_ chatPresentationInterfaceState: ChatPresentationInterfaceState, context: AccountContext, currentPanel: ChatTitleAccessoryPanelNode?, controllerInteraction: ChatControllerInteraction?, interfaceInteraction: ChatPanelInterfaceInteraction?, force: Bool) -> ChatTitleAccessoryPanelNode? {
+     if !force, case .standard(.embedded) = chatPresentationInterfaceState.mode {
+@@ -49,6 +50,16 @@ func titlePanelForChatPresentationInterfaceState(_ chatPresentationInterfaceStat
+         }
+     }
+     
++    // The tags row above the pinned messages of a private chat, while any of them has a tag.
++    if case .pinnedMessages = chatPresentationInterfaceState.subject, case let .peer(peerId) = chatPresentationInterfaceState.chatLocation, peerId.namespace == Namespaces.Peer.CloudUser, !PinnedMessageTagsManager.shared(context: context).visibleTags(peerId: peerId).isEmpty {
++        if let currentPanel = currentPanel as? PinnedMessageTagsPanelNode {
++            return currentPanel
++        }
++        let panel = PinnedMessageTagsPanelNode(context: context, peerId: peerId)
++        panel.interfaceInteraction = interfaceInteraction
++        return panel
++    }
++    
+     var inhibitTitlePanelDisplay = false
+     switch chatPresentationInterfaceState.subject {
+     case .messageOptions:
+diff --git a/submodules/TelegramUIPreferences/Sources/PinnedMessageTags.swift b/submodules/TelegramUIPreferences/Sources/PinnedMessageTags.swift
+new file mode 100644
+index 0000000000..90fc7a5a44
+--- /dev/null
++++ b/submodules/TelegramUIPreferences/Sources/PinnedMessageTags.swift
+@@ -0,0 +1,94 @@
++import Foundation
++import SwiftSignalKit
++import TelegramCore
++
++// A tag is a custom emoji with an optional name. A pinned message can carry one tag; the tags belong to the
++// account and are shared by all of its chats. Tags are kept on this device only.
++public struct PinnedMessageTag: Equatable, Hashable {
++    public var id: Int64
++    public var title: String
++    public var fileId: Int64
++
++    public init(id: Int64, title: String, fileId: Int64) {
++        self.id = id
++        self.title = title
++        self.fileId = fileId
++    }
++}
++
++public struct PinnedMessageTags: Equatable, Codable {
++    // In the order they were created.
++    public var tags: [PinnedMessageTag]
++    // Tag of each tagged message.
++    public var messageTags: [EngineMessage.Id: Int64]
++
++    public static var `default`: PinnedMessageTags {
++        return PinnedMessageTags(tags: [], messageTags: [:])
++    }
++
++    public init(tags: [PinnedMessageTag], messageTags: [EngineMessage.Id: Int64]) {
++        self.tags = tags
++        self.messageTags = messageTags
++    }
++
++    public init(from decoder: Decoder) throws {
++        let container = try decoder.container(keyedBy: StringCodingKey.self)
++
++        let tagIds = try container.decodeIfPresent([Int64].self, forKey: "tagIds") ?? []
++        let tagTitles = try container.decodeIfPresent([String].self, forKey: "tagTitles") ?? []
++        let tagFileIds = try container.decodeIfPresent([Int64].self, forKey: "tagFileIds") ?? []
++        var tags: [PinnedMessageTag] = []
++        for i in 0 ..< min(tagIds.count, tagTitles.count, tagFileIds.count) {
++            tags.append(PinnedMessageTag(id: tagIds[i], title: tagTitles[i], fileId: tagFileIds[i]))
++        }
++        self.tags = tags
++
++        let peerIds = try container.decodeIfPresent([Int64].self, forKey: "peerIds") ?? []
++        let namespaces = try container.decodeIfPresent([Int32].self, forKey: "namespaces") ?? []
++        let messageIds = try container.decodeIfPresent([Int32].self, forKey: "messageIds") ?? []
++        let messageTagIds = try container.decodeIfPresent([Int64].self, forKey: "messageTagIds") ?? []
++        var messageTags: [EngineMessage.Id: Int64] = [:]
++        for i in 0 ..< min(peerIds.count, namespaces.count, messageIds.count, messageTagIds.count) {
++            messageTags[EngineMessage.Id(peerId: EnginePeer.Id(peerIds[i]), namespace: namespaces[i], id: messageIds[i])] = messageTagIds[i]
++        }
++        self.messageTags = messageTags
++    }
++
++    public func encode(to encoder: Encoder) throws {
++        var container = encoder.container(keyedBy: StringCodingKey.self)
++
++        try container.encode(self.tags.map(\.id), forKey: "tagIds")
++        try container.encode(self.tags.map(\.title), forKey: "tagTitles")
++        try container.encode(self.tags.map(\.fileId), forKey: "tagFileIds")
++
++        let messageTags = self.messageTags.sorted(by: { $0.key < $1.key })
++        try container.encode(messageTags.map { $0.key.peerId.toInt64() }, forKey: "peerIds")
++        try container.encode(messageTags.map { $0.key.namespace }, forKey: "namespaces")
++        try container.encode(messageTags.map { $0.key.id }, forKey: "messageIds")
++        try container.encode(messageTags.map(\.value), forKey: "messageTagIds")
++    }
++
++    public func tag(id: Int64) -> PinnedMessageTag? {
++        return self.tags.first(where: { $0.id == id })
++    }
++
++    public func tag(messageId: EngineMessage.Id) -> PinnedMessageTag? {
++        return self.messageTags[messageId].flatMap { self.tag(id: $0) }
++    }
++
++    public mutating func setTag(id: Int64?, messageId: EngineMessage.Id) {
++        self.messageTags[messageId] = id
++    }
++
++    public mutating func removeTag(id: Int64) {
++        self.tags.removeAll(where: { $0.id == id })
++        self.messageTags = self.messageTags.filter { $0.value != id }
++    }
++}
++
++public func updatePinnedMessageTags(engine: TelegramEngine, _ f: @escaping (PinnedMessageTags) -> PinnedMessageTags) -> Signal<Never, NoError> {
++    return engine.preferences.update(id: ApplicationSpecificPreferencesKeys.pinnedMessageTags, { entry in
++        let current = entry?.get(PinnedMessageTags.self) ?? PinnedMessageTags.default
++        return SharedPreferencesEntry(f(current))
++    })
++}
+diff --git a/submodules/TelegramUIPreferences/Sources/PostboxKeys.swift b/submodules/TelegramUIPreferences/Sources/PostboxKeys.swift
+index 516215abbc..a9fa35183e 100644
+--- a/submodules/TelegramUIPreferences/Sources/PostboxKeys.swift
++++ b/submodules/TelegramUIPreferences/Sources/PostboxKeys.swift
+@@ -12,6 +12,7 @@ private enum ApplicationSpecificPreferencesKeyValues: Int32 {
+     case walletState = 23
+     case qrStudioLook = 24
+     case qrStudioPeerLook = 25
++    case pinnedMessageTags = 27
+ }
+ 
+ public struct ApplicationSpecificPreferencesKeys {
+@@ -23,6 +24,7 @@ public struct ApplicationSpecificPreferencesKeys {
+     public static let ageVerificationState: EngineDataBuffer = applicationSpecificPreferencesKey(ApplicationSpecificPreferencesKeyValues.ageVerificationState.rawValue)
+     public static let walletState: EngineDataBuffer = applicationSpecificPreferencesKey(ApplicationSpecificPreferencesKeyValues.walletState.rawValue)
+     public static let qrStudioLook: EngineDataBuffer = applicationSpecificPreferencesKey(ApplicationSpecificPreferencesKeyValues.qrStudioLook.rawValue)
++    public static let pinnedMessageTags: EngineDataBuffer = applicationSpecificPreferencesKey(ApplicationSpecificPreferencesKeyValues.pinnedMessageTags.rawValue)
+     
+     public static func qrStudioPeerLook(peerId: EnginePeer.Id) -> EngineDataBuffer {
+         let key = EngineDataBuffer(length: 4 + 8)
